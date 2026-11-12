@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0e6b59">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Trip board">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Trip board</title>
+<style>
+:root {
+  --bg: #eef2f0; --card: #ffffff; --fg: #14201d; --muted: #55655f; --line: #cdd8d3;
+  --accent: #0e6b59; --accent-ink: #ffffff; --err: #a8231b;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1513; --card: #16211e; --fg: #e6efeb; --muted: #98aaa3; --line: #2a3a35; --accent: #3fb59a; --accent-ink: #06201a; --err: #ff8a80; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.lock { min-height: 100%; display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.card { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 28px 24px 24px; box-shadow: 0 8px 30px rgba(0, 0, 0, .08); }
+.mark { width: 56px; height: 56px; border-radius: 14px; background: var(--accent); display: grid; place-items: center; margin: 0 0 16px; }
+.mark svg { width: 34px; height: 34px; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .2px; }
+.sub { margin: 0 0 18px; color: var(--muted); font-size: 15px; }
+label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; }
+input[type=password], input[type=text] { width: 100%; font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chk { display: flex; gap: 10px; align-items: center; margin: 14px 0 18px; font-size: 14px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.chk input { width: 18px; height: 18px; accent-color: var(--accent); }
+button { width: 100%; font: inherit; font-weight: 600; padding: 13px 14px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+button[disabled] { opacity: .6; cursor: progress; }
+.err { min-height: 1.4em; margin: 12px 0 0; color: var(--err); font-size: 14px; }
+.note { margin: 14px 0 0; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="lock" id="lock">
+  <div class="card">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 64 64" fill="#fff"><rect x="31" y="4" width="2" height="14"/><circle cx="32" cy="22" r="4"/><rect x="30" y="26" width="4" height="14"/><circle cx="32" cy="45" r="8"/><path d="M27 52l-5 10h3l5-9zM37 52l5 10h-3l-5-9z"/></svg>
+    </div>
+    <h1>Trip board</h1>
+    <p class="sub" id="msg">Enter your passphrase to open it.</p>
+    <form id="f" autocomplete="on">
+      <input type="text" name="username" autocomplete="username" value="trip-board" hidden>
+      <label for="pw">Passphrase</label>
+      <input id="pw" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      <label class="chk"><input id="keep" type="checkbox" checked> Keep it unlocked on this device</label>
+      <button id="go" type="submit">Unlock</button>
+    </form>
+    <p class="err" id="err" role="alert"></p>
+    <p class="note" id="note"></p>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var AAD = new TextEncoder().encode('trip-board:v1');
+  var payload = null;
+
+  function unb64(s) { var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+
+  // Offline support: the service worker keeps the lock screen, the encrypted file and the pictures.
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch(function () {}); }
+
+  // The unlocked key can be kept on this device (non-extractable, in IndexedDB) so the app opens without typing.
+  function idb() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open('trip-board', 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('keys'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function idbGet(k) {
+    return idb().then(function (db) {
+      return new Promise(function (res, rej) {
+        var q = db.transaction('keys').objectStore('keys').get(k);
+        q.onsuccess = function () { db.close(); res(q.result); };
+        q.onerror = function () { db.close(); rej(q.error); };
+      });
+    });
+  }
+  function idbPut(k, v) {
+    return idb().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('keys', 'readwrite');
+        tx.objectStore('keys').put(v, k);
+        tx.oncomplete = function () { db.close(); res(); };
+        tx.onerror = function () { db.close(); rej(tx.error); };
+      });
+    });
+  }
+  function idbDel(k) {
+    return idb().then(function (db) {
+      return new Promise(function (res) {
+        var tx = db.transaction('keys', 'readwrite');
+        tx.objectStore('keys').delete(k);
+        tx.oncomplete = function () { db.close(); res(); };
+        tx.onerror = function () { db.close(); res(); };
+      });
+    });
+  }
+
+  function derive(pw) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(pw.trim()), 'PBKDF2', false, ['deriveKey']).then(function (mat) {
+      return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(payload.kdf.salt), iterations: payload.kdf.iter, hash: 'SHA-256' }, mat, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    });
+  }
+  function open(key) {
+    return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(payload.enc.iv), additionalData: AAD }, key, unb64(payload.ct)).then(function (plain) {
+      var html = new TextDecoder().decode(plain);
+      document.open(); document.write(html); document.close();
+    });
+  }
+
+  function show(msg, err) { $('err').textContent = err || ''; if (msg) $('msg').textContent = msg; }
+
+  function start() {
+    fetch('payload.json', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('missing');
+      return r.json();
+    }).then(function (p) {
+      if (!p || p.v !== 1 || !p.kdf || !p.enc || !p.ct || p.kdf.iter < 100000 || p.kdf.iter > 5000000) throw new Error('bad');
+      payload = p;
+      var built = new Date(p.built);
+      if (!isNaN(built)) $('note').textContent = 'Last updated ' + built.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      return idbGet('key').catch(function () { return null; });
+    }).then(function (rec) {
+      if (rec && rec.kid === payload.kid && rec.key) {
+        show('Opening...');
+        return open(rec.key).catch(function () { return idbDel('key').then(function () { show('Enter your passphrase to open it.'); $('pw').focus(); }); });
+      }
+      $('pw').focus();
+    }).catch(function () {
+      $('f').hidden = true;
+      show('', navigator.onLine ? 'This copy is not set up yet.' : 'You are offline and this device has not opened it before. Open it once with a connection.');
+    });
+  }
+
+  $('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!payload) return;
+    var go = $('go'), pw = $('pw').value;
+    go.disabled = true; show('Unlocking...', '');
+    derive(pw).then(function (key) {
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(payload.enc.iv), additionalData: AAD }, key, unb64(payload.ct)).then(function (plain) {
+        var keep = $('keep').checked ? idbPut('key', { kid: payload.kid, key: key }) : idbDel('key');
+        return keep.catch(function () {}).then(function () {
+          var html = new TextDecoder().decode(plain);
+          document.open(); document.write(html); document.close();
+        });
+      });
+    }).catch(function () {
+      go.disabled = false; $('pw').select();
+      show('Enter your passphrase to open it.', 'That passphrase did not open it. Check it and try again.');
+    });
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>
